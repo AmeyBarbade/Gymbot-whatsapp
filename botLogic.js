@@ -1,16 +1,18 @@
 const axios = require('axios');
 const { WorkoutSession, Routine } = require('./database');
-const { getWelcomeMenu, getExerciseMenu, getMainMenuList } = require('./whatsappMenus');
+const { getMuscleGroupList, getExerciseList, getPostSetMenu, getFinishMenu } = require('./whatsappMenus');
 
 // ==========================================
 // HELPER: Send message to WhatsApp via Meta API
 // ==========================================
 async function sendToWhatsApp(messagePayload) {
     try {
-        const META_API_TOKEN = process.env.META_API_TOKEN;
-        const META_PHONE_ID = process.env.META_PHONE_ID;
+        const META_API_TOKEN = process.env.META_API_TOKEN?.trim();
+        const META_PHONE_ID = process.env.META_PHONE_ID?.trim();
+        
+        console.log("Token starts with:", META_API_TOKEN?.substring(0, 5));
 
-        const url = `https://graph.instagram.com/v18.0/${META_PHONE_ID}/messages`;
+        const url = `https://graph.facebook.com/v18.0/${META_PHONE_ID}/messages`;
 
         const response = await axios.post(url, messagePayload, {
             headers: {
@@ -33,126 +35,139 @@ async function processMessage(userPhone, messageText, phone_number_id) {
     // Find if you have a workout running right now
     let session = await WorkoutSession.findOne({ userPhone, isCompleted: false });
 
-    // ==========================================
-    // STATE 0: IDLE (You texted 'gym')
-    // ==========================================
-    if (text === 'start' || text === 'gym') {
+    // 1. FINISH COMMAND: Pushes everything to MongoDB permanently
+    if (text === 'finish') {
         if (session) {
+            session.isCompleted = true;
+            await session.save();
+            await sendToWhatsApp(getFinishMenu(userPhone));
+        } else {
             await sendToWhatsApp({
                 messaging_product: "whatsapp",
                 to: userPhone,
                 type: "text",
-                text: { body: "Bro, you already have an active workout. Finish it or cancel it." }
+                text: { body: "Bro, you don't have an active workout to finish! Send 'gym' to start." }
             });
-            return;
+        }
+        return;
+    }
+
+    // Trigger Muscle List
+    if (text === 'gym' || text === 'btn_select_muscle') {
+        await sendToWhatsApp(getMuscleGroupList(userPhone));
+        return;
+    }
+
+    // 2. NAVIGATIONAL BUTTONS
+    if (text === 'btn_add_set') {
+        await sendToWhatsApp({
+            messaging_product: "whatsapp",
+            to: userPhone,
+            type: "text",
+            text: { body: `💪 Log more for ${session.activeExercise}:` }
+        });
+        return;
+    }
+
+    if (text === 'btn_select_ex') {
+        if (session && session.routineName) {
+            await sendToWhatsApp(getExerciseList(userPhone, session.routineName));
+        } else {
+            await sendToWhatsApp(getMuscleGroupList(userPhone));
+        }
+        return;
+    }
+
+    // Handle Muscle Group Selection
+    if (text.startsWith('group_')) {
+        const muscle = text.split('_')[1];
+        
+        // Fetch the last 2 completed sessions for this specific muscle group
+        const pastSessions = await WorkoutSession.find({
+            userPhone,
+            routineName: muscle,
+            isCompleted: true
+        }).sort({ date: -1 }).limit(2);
+
+        if (pastSessions.length > 0) {
+            let historyText = `📊 *Last 2 ${muscle.toUpperCase()} Sessions:*\n`;
+            
+            pastSessions.forEach((sess, index) => {
+                const sessionDate = new Date(sess.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                historyText += `\n📅 *${sessionDate}*\n`;
+                
+                sess.completedExercises.forEach(ex => {
+                    historyText += `  • ${ex.exerciseName}: `;
+                    const setDetails = ex.sets.map(set => `${set.weight}x${set.reps}`).join(', ');
+                    historyText += `${setDetails}\n`;
+                });
+            });
+            
+            // Send the history message first
+            await sendToWhatsApp({
+                messaging_product: "whatsapp",
+                to: userPhone,
+                type: "text",
+                text: { body: historyText }
+            });
         }
 
-        const todayStr = new Date().toLocaleDateString('en-US', { weekday: 'long' });
-        const menuPayload = getWelcomeMenu(userPhone, todayStr);
-        
-        await sendToWhatsApp(menuPayload);
-        console.log("✅ Sent welcome menu to WhatsApp");
+        // Then send the exercise list menu for them to pick the next move
+        await sendToWhatsApp(getExerciseList(userPhone, muscle));
         return;
     }
 
-    // ==========================================
-    // STATE 0.5: THE BUTTON TAPS
-    // ==========================================
-    if (text === 'btn_start_default') {
-        console.log("Starting default routine for today...");
-        session = new WorkoutSession({
-            userPhone,
-            routineName: "Legs", 
-            pendingExercises: [
-                { id: "ex_squat", name: "Squat Machine" },
-                { id: "ex_press", name: "Leg Press" }
-            ]
-        });
+    // Handle Exercise Selection
+    if (text.startsWith('ex|')) {
+        const [_, muscle, exName] = text.split('|');
+        if (!session) {
+            session = new WorkoutSession({ userPhone, routineName: muscle });
+        }
+        session.activeExercise = exName;
         await session.save();
-
-        const exerciseMenu = getExerciseMenu(userPhone, session.pendingExercises);
-        await sendToWhatsApp(exerciseMenu);
+        await sendToWhatsApp({
+            messaging_product: "whatsapp",
+            to: userPhone,
+            type: "text",
+            text: { body: `💪 Logging: ${exName}\n\nSend sets as: weight reps\n(Example: 50 12)` }
+        });
         return;
     }
 
-    if (text === 'btn_main_menu') {
-        console.log("User asking for 5-day list...");
-        const mainMenu = getMainMenuList(userPhone);
-        await sendToWhatsApp(mainMenu);
-        return;
-    }
-
-    // ==========================================
-    // STATE 1: WAITING FOR SETS (e.g., "45x10 40x12")
-    // ==========================================
+    // 3. THE SMART PARSER (weight reps OR weight.reps)
     if (session && session.activeExercise) {
-        console.log(`Parsing sets for ${session.activeExercise}: ${text}`);
-        try {
-            const setsArray = text.split(" ").map(set => {
-                const [weight, reps] = set.split("x");
-                return { weight: Number(weight), reps: Number(reps) };
-            });
+        const lines = text.split('\n');
+        const loggedSets = [];
 
-            const exerciseObj = session.pendingExercises.find(e => e.id === session.activeExercise);
-
-            session.completedExercises.push({
-                exerciseId: session.activeExercise,
-                exerciseName: exerciseObj.name,
-                sets: setsArray
-            });
-
-            session.pendingExercises = session.pendingExercises.filter(e => e.id !== session.activeExercise);
-            session.activeExercise = null; 
-
-            if (session.pendingExercises.length === 0) {
-                session.isCompleted = true;
-                await session.save();
-                await sendToWhatsApp({
-                    messaging_product: "whatsapp",
-                    to: userPhone,
-                    type: "text",
-                    text: { body: "🔥 Workout Complete! Great job bro. You crushed it!" }
+        lines.forEach(line => {
+            // This regex finds two numbers separated by a space or a dot
+            const match = line.trim().match(/^(\d+(?:\.\d+)?)(?:\s+|\.)(\d+)$/);
+            if (match) {
+                loggedSets.push({
+                    weight: parseFloat(match[1]),
+                    reps: parseInt(match[2])
                 });
-                return;
+            }
+        });
+
+        if (loggedSets.length > 0) {
+            // Find if this exercise already exists in this session to append sets
+            // Note: Since this is mongoose, we find the index manually
+            let exIndex = session.completedExercises.findIndex(e => e.exerciseName === session.activeExercise);
+            
+            if (exIndex > -1) {
+                session.completedExercises[exIndex].sets.push(...loggedSets);
+            } else {
+                session.completedExercises.push({
+                    exerciseName: session.activeExercise,
+                    sets: loggedSets
+                });
             }
 
             await session.save();
-            await sendToWhatsApp({
-                messaging_product: "whatsapp",
-                to: userPhone,
-                type: "text",
-                text: { body: "✅ Sets logged! Pick next exercise:" }
-            });
             
-            const exerciseMenu = getExerciseMenu(userPhone, session.pendingExercises);
-            await sendToWhatsApp(exerciseMenu);
-            return;
-
-        } catch (error) {
-            await sendToWhatsApp({
-                messaging_product: "whatsapp",
-                to: userPhone,
-                type: "text",
-                text: { body: "❌ Bro, formatting error. Send as: 45x10 40x12" }
-            });
-            return;
-        }
-    }
-
-    // ==========================================
-    // STATE 2: EXERCISE SELECTION FROM CHECKLIST
-    // ==========================================
-    if (session && !session.activeExercise) {
-        const selectedEx = session.pendingExercises.find(e => e.id === text);
-        if (selectedEx) {
-            session.activeExercise = selectedEx.id;
-            await session.save();
-            await sendToWhatsApp({
-                messaging_product: "whatsapp",
-                to: userPhone,
-                type: "text",
-                text: { body: `💪 Selected: ${selectedEx.name}\n\nSend your sets (e.g., 50x10 50x8):` }
-            });
+            // Send the new 3-button menu
+            await sendToWhatsApp(getPostSetMenu(userPhone));
             return;
         }
     }

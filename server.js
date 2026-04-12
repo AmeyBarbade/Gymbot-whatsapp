@@ -62,8 +62,20 @@ app.post('/webhook', (req, res) => {
             body.entry[0].changes[0].value.messages[0]
         ) {
             let phone_number_id = body.entry[0].changes[0].value.metadata.phone_number_id;
-            let from = body.entry[0].changes[0].value.messages[0].from; // Your WhatsApp number
-            let msg_body = body.entry[0].changes[0].value.messages[0].text.body;
+            let msg = body.entry[0].changes[0].value.messages[0];
+            let from = msg.from; // Your WhatsApp number
+            
+            // Extract the text depending on message type (text vs list reply vs button reply)
+            let msg_body = "";
+            if (msg.type === "text") {
+                msg_body = msg.text.body;
+            } else if (msg.type === "interactive") {
+                if (msg.interactive.type === "list_reply") {
+                    msg_body = msg.interactive.list_reply.id;
+                } else if (msg.interactive.type === "button_reply") {
+                    msg_body = msg.interactive.button_reply.id;
+                }
+            }
 
             console.log(`Message from ${from}: ${msg_body}`);
             

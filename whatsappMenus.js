@@ -116,7 +116,15 @@ const exerciseData = {
     legs: ["Hack Squats", "Hack Squats (back rest)", "Leg press", "leg extension", "leg extension for hamstrings", "Calf raises", "bulgian squats"]
 };
 
-function getMuscleGroupList(userPhone) {
+function getMuscleGroupList(userPhone, isAddingExercise = false) {
+    const listConfig = isAddingExercise ? {
+        text: "Select a muscle group to add your new exercise to:",
+        prefix: "addgroup_"
+    } : {
+        text: "Select a muscle group:",
+        prefix: "group_"
+    };
+
     return {
         "messaging_product": "whatsapp",
         "to": userPhone,
@@ -124,18 +132,18 @@ function getMuscleGroupList(userPhone) {
         "interactive": {
             "type": "list",
             "header": { "type": "text", "text": "Gym Tracker" },
-            "body": { "text": "Select a muscle group:" },
+            "body": { "text": listConfig.text },
             "action": {
                 "button": "Select Muscle",
                 "sections": [{
                     "title": "Muscle Groups",
                     "rows": [
-                        { "id": "group_back", "title": "Back" },
-                        { "id": "group_biceps", "title": "Biceps" },
-                        { "id": "group_chest", "title": "Chest" },
-                        { "id": "group_triceps", "title": "Triceps" },
-                        { "id": "group_legs", "title": "Legs" },
-                        { "id": "group_shoulders", "title": "Shoulders" }
+                        { "id": `${listConfig.prefix}back`, "title": "Back" },
+                        { "id": `${listConfig.prefix}biceps`, "title": "Biceps" },
+                        { "id": `${listConfig.prefix}chest`, "title": "Chest" },
+                        { "id": `${listConfig.prefix}triceps`, "title": "Triceps" },
+                        { "id": `${listConfig.prefix}legs`, "title": "Legs" },
+                        { "id": `${listConfig.prefix}shoulders`, "title": "Shoulders" }
                     ]
                 }]
             }
@@ -143,12 +151,19 @@ function getMuscleGroupList(userPhone) {
     };
 }
 
-function getExerciseList(userPhone, muscleGroup) {
-    const exercises = exerciseData[muscleGroup] || [];
-    const rows = exercises.map((ex, index) => ({
-        "id": `ex|${muscleGroup}|${ex}`, // Store muscle and name in the ID
+function getExerciseList(userPhone, muscleGroup, customExercises = []) {
+    let exercises = (exerciseData[muscleGroup] || []).concat(customExercises.map(ce => ce.name));
+    
+    // WhatsApp has a 10 row limit for a single section in List messages,
+    // so we cap it to the first 10, or chunk them. For simplicity, cap to 10 right now.
+    // Actually, one section can have up to 10 rows.
+    const allRows = exercises.map(ex => ({
+        "id": `ex|${muscleGroup}|${ex.substring(0, 15)}`, // Store muscle and name in the ID (ID length limit 200)
         "title": ex.substring(0, 24)
     }));
+
+    // WhatsApp list sections can have max 10 rows per section. Total rows = 10.
+    const rows = allRows.slice(0, 10); 
 
     return {
         "messaging_product": "whatsapp",

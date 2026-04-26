@@ -36,6 +36,8 @@ const workoutSessionSchema = new mongoose.Schema({
     // State Machine Trackers
     isCompleted: { type: Boolean, default: false },
     activeExercise: { type: String, default: null }, // Remembers what you tapped
+    state: { type: String, default: 'IDLE' }, // State for flow management (e.g., 'ADDING_CUSTOM_EXERCISE')
+    targetMuscleGroup: { type: String, default: null }, // Which group to add custom exercise to
     
     // The Dynamic Checklist
     pendingExercises: [{ id: String, name: String }],
@@ -52,8 +54,18 @@ const workoutSessionSchema = new mongoose.Schema({
     ]
 });
 
+// ==========================================
+// CUSTOM EXERCISES: User-added exercises
+// ==========================================
+const customExerciseSchema = new mongoose.Schema({
+    userPhone: String,
+    muscleGroup: String, // e.g. "biceps"
+    name: String
+});
+
 module.exports = {
     connectDB,
     Routine: mongoose.model('Routine', routineSchema),
-    WorkoutSession: mongoose.model('WorkoutSession', workoutSessionSchema)
+    WorkoutSession: mongoose.model('WorkoutSession', workoutSessionSchema),
+    CustomExercise: mongoose.model('CustomExercise', customExerciseSchema)
 };

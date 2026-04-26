@@ -1,5 +1,5 @@
 const axios = require('axios');
-const { WorkoutSession, Routine } = require('./database');
+const { WorkoutSession, Routine, CustomExercise } = require('./database');
 const { getMuscleGroupList, getExerciseList, getPostSetMenu, getFinishMenu } = require('./whatsappMenus');
 
 // ==========================================
@@ -35,6 +35,59 @@ async function processMessage(userPhone, messageText, phone_number_id) {
     // Find if you have a workout running right now
     let session = await WorkoutSession.findOne({ userPhone, isCompleted: false });
 
+    // 0. CHECK IF WE ARE WAITING FOR A CUSTOM EXERCISE NAME
+    if (session && session.state === 'ADDING_CUSTOM_EXERCISE') {
+        const customExName = messageText.trim();
+        
+        if (customExName.toLowerCase() === 'cancel') {
+            session.state = 'IDLE';
+            session.targetMuscleGroup = null;
+            await session.save();
+            await sendToWhatsApp({
+                messaging_product: "whatsapp",
+                to: userPhone,
+                type: "text",
+                text: { body: "🚫 Canceled adding exercise." }
+            });
+            return;
+        }
+
+        // Save new custom exercise
+        await new CustomExercise({
+            userPhone,
+            muscleGroup: session.targetMuscleGroup,
+            name: customExName
+        }).save();
+
+        session.state = 'IDLE';
+        const muscleAddedTo = session.targetMuscleGroup;
+        session.targetMuscleGroup = null;
+        await session.save();
+
+        await sendToWhatsApp({
+            messaging_product: "whatsapp",
+            to: userPhone,
+            type: "text",
+            text: { body: `✅ Sweet! Added *${customExName}* to your ${muscleAddedTo.toUpperCase()} exercises.` }
+        });
+
+        // Show them the updated list for that muscle
+        const customExs = await CustomExercise.find({ userPhone, muscleGroup: muscleAddedTo });
+        await sendToWhatsApp(getExerciseList(userPhone, muscleAddedTo, customExs));
+        return;
+    }
+
+    // 0.5. ADD EXERCISE FLOW
+    if (text === 'add exercise') {
+        if (!session) {
+            session = new WorkoutSession({ userPhone });
+            await session.save();
+        }
+        
+        await sendToWhatsApp(getMuscleGroupList(userPhone, true)); // Pass true to get addgroup_ callback
+        return;
+    }
+
     // 1. FINISH COMMAND: Pushes everything to MongoDB permanently
     if (text === 'finish') {
         if (session) {
@@ -49,6 +102,90 @@ async function processMessage(userPhone, messageText, phone_number_id) {
                 text: { body: "Bro, you don't have an active workout to finish! Send 'gym' to start." }
             });
         }
+        return;
+    }
+
+    // 1.5. VIEW COMMAND: Check recorded workouts for today or a specific date
+    if (text.startsWith('view')) {
+        let targetDate = new Date(); // Defaults to today
+        const customDate = text.replace('view', '').trim();
+        
+        if (customDate) {
+            // Very simple date parsing (e.g., '24 april'). Append current year if missing to help parser
+            const hasYear = /\d{4}/.test(customDate);
+            const dateToParse = hasYear ? customDate : `${customDate} ${new Date().getFullYear()}`;
+            targetDate = new Date(dateToParse);
+            
+            if (isNaN(targetDate.getTime())) {
+                await sendToWhatsApp({
+                    messaging_product: "whatsapp",
+                    to: userPhone,
+                    type: "text",
+                    text: { body: "📅 I couldn't understand that date. Try 'view' or 'view 24 april'." }
+                });
+                return;
+            }
+        }
+
+        // Setup 24-hour range for the chosen date
+        const startOfDay = new Date(targetDate);
+        startOfDay.setHours(0, 0, 0, 0);
+        const endOfDay = new Date(targetDate);
+        endOfDay.setHours(23, 59, 59, 999);
+
+        // Fetch both Active and Completed workouts for the requested day
+        const dayWorkouts = await WorkoutSession.find({
+            userPhone,
+            date: { $gte: startOfDay, $lte: endOfDay }
+        });
+
+        const displayDate = targetDate.toLocaleDateString('en-US', { day: 'numeric', month: 'short' });
+
+        if (dayWorkouts.length === 0) {
+            await sendToWhatsApp({
+                messaging_product: "whatsapp",
+                to: userPhone,
+                type: "text",
+                text: { body: `📉 Hmm, I couldn't find any workouts logged on *${displayDate}*.` }
+            });
+            return;
+        }
+
+        let report = `📊 *Workout Summary for ${displayDate}*\n`;
+        let totalVolume = 0;
+
+        dayWorkouts.forEach((w, index) => {
+            const status = w.isCompleted ? 'Finished' : 'Active';
+            const routine = w.routineName ? w.routineName.toUpperCase() : 'Custom';
+            report += `\n*Session ${index + 1}: ${routine}* (${status})\n`;
+            
+            if (w.completedExercises && w.completedExercises.length > 0) {
+                w.completedExercises.forEach(ex => {
+                    report += `  💪 *${ex.exerciseName}*\n`;
+                    let exVolume = 0;
+                    
+                    ex.sets.forEach((set, i) => {
+                        report += `    Set ${i + 1}: ${set.weight}kg x ${set.reps} reps\n`;
+                        exVolume += (set.weight * set.reps);
+                    });
+                    totalVolume += exVolume;
+                });
+            } else {
+                report += `  (No sets recorded yet)\n`;
+            }
+        });
+
+        if (totalVolume > 0) {
+            report += `\n🔥 *Total Volume Lifted:* ${totalVolume.toFixed(1)}kg!`;
+        }
+
+        await sendToWhatsApp({
+            messaging_product: "whatsapp",
+            to: userPhone,
+            type: "text",
+            text: { body: report }
+        });
+        
         return;
     }
 
@@ -71,14 +208,36 @@ async function processMessage(userPhone, messageText, phone_number_id) {
 
     if (text === 'btn_select_ex') {
         if (session && session.routineName) {
-            await sendToWhatsApp(getExerciseList(userPhone, session.routineName));
+            const customExs = await CustomExercise.find({ userPhone, muscleGroup: session.routineName });
+            await sendToWhatsApp(getExerciseList(userPhone, session.routineName, customExs));
         } else {
             await sendToWhatsApp(getMuscleGroupList(userPhone));
         }
         return;
     }
 
-    // Handle Muscle Group Selection
+    // Handle Muscle Group Selection (Adding custom exercise)
+    if (text.startsWith('addgroup_')) {
+        const muscle = text.split('_')[1];
+        
+        if (!session) {
+            session = new WorkoutSession({ userPhone });
+        }
+        
+        session.state = 'ADDING_CUSTOM_EXERCISE';
+        session.targetMuscleGroup = muscle;
+        await session.save();
+
+        await sendToWhatsApp({
+            messaging_product: "whatsapp",
+            to: userPhone,
+            type: "text",
+            text: { body: `Got it. What's the name of the new *${muscle}* exercise you want to record?\n\n(Type the exact name, e.g., 'Barbell curl'. If you change your mind, type 'cancel')` }
+        });
+        return;
+    }
+
+    // Handle Muscle Group Selection (Normal logging)
     if (text.startsWith('group_')) {
         const muscle = text.split('_')[1];
         
@@ -112,8 +271,11 @@ async function processMessage(userPhone, messageText, phone_number_id) {
             });
         }
 
+        // Fetch custom exercises to include in the list menu
+        const customExs = await CustomExercise.find({ userPhone, muscleGroup: muscle });
+
         // Then send the exercise list menu for them to pick the next move
-        await sendToWhatsApp(getExerciseList(userPhone, muscle));
+        await sendToWhatsApp(getExerciseList(userPhone, muscle, customExs));
         return;
     }
 

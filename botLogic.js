@@ -77,6 +77,36 @@ async function processMessage(userPhone, messageText, phone_number_id) {
         return;
     }
 
+    // 0.2. CHECK IF WE ARE WAITING FOR A COMMENT
+    if (session && session.state === 'ADDING_COMMENT') {
+        const commentText = messageText.trim();
+        
+        if (commentText.toLowerCase() === 'cancel') {
+            session.state = 'IDLE';
+            await session.save();
+            await sendToWhatsApp({
+                messaging_product: "whatsapp",
+                to: userPhone,
+                type: "text",
+                text: { body: "🚫 Canceled adding comment." }
+            });
+            return;
+        }
+
+        // Append comment if one already exists, else set it
+        session.comment = session.comment ? session.comment + "\n• " + commentText : "• " + commentText;
+        session.state = 'IDLE';
+        await session.save();
+
+        await sendToWhatsApp({
+            messaging_product: "whatsapp",
+            to: userPhone,
+            type: "text",
+            text: { body: "✅ Got it! Your note has been added to this session." }
+        });
+        return;
+    }
+
     // 0.5. ADD EXERCISE FLOW
     if (text === 'add exercise') {
         if (!session) {
@@ -102,6 +132,30 @@ async function processMessage(userPhone, messageText, phone_number_id) {
                 text: { body: "Bro, you don't have an active workout to finish! Send 'gym' to start." }
             });
         }
+        return;
+    }
+
+    // 1.2. COMMENT COMMAND: Add notes to the active session
+    if (text === 'comment') {
+        if (!session) {
+            await sendToWhatsApp({
+                messaging_product: "whatsapp",
+                to: userPhone,
+                type: "text",
+                text: { body: "Bro, you don't have an active workout to comment on! Send 'gym' to start." }
+            });
+            return;
+        }
+
+        session.state = 'ADDING_COMMENT';
+        await session.save();
+
+        await sendToWhatsApp({
+            messaging_product: "whatsapp",
+            to: userPhone,
+            type: "text",
+            text: { body: "📝 Tell me what's on your mind. (Notes on energy levels, injuries, mistakes, etc.)\n\n(Type 'cancel' to abort)" }
+        });
         return;
     }
 
@@ -158,6 +212,10 @@ async function processMessage(userPhone, messageText, phone_number_id) {
             const status = w.isCompleted ? 'Finished' : 'Active';
             const routine = w.routineName ? w.routineName.toUpperCase() : 'Custom';
             report += `\n*Session ${index + 1}: ${routine}* (${status})\n`;
+            
+            if (w.comment) {
+                report += `💬 *Note:* \n${w.comment}\n\n`;
+            }
             
             if (w.completedExercises && w.completedExercises.length > 0) {
                 w.completedExercises.forEach(ex => {
@@ -241,6 +299,13 @@ async function processMessage(userPhone, messageText, phone_number_id) {
     if (text.startsWith('group_')) {
         const muscle = text.split('_')[1];
         
+        if (!session) {
+            session = new WorkoutSession({ userPhone, routineName: muscle });
+        } else {
+            session.routineName = muscle;
+        }
+        await session.save();
+
         // Fetch the last 2 completed sessions for this specific muscle group
         const pastSessions = await WorkoutSession.find({
             userPhone,
@@ -284,6 +349,8 @@ async function processMessage(userPhone, messageText, phone_number_id) {
         const [_, muscle, exName] = text.split('|');
         if (!session) {
             session = new WorkoutSession({ userPhone, routineName: muscle });
+        } else {
+            session.routineName = muscle;
         }
         session.activeExercise = exName;
         await session.save();

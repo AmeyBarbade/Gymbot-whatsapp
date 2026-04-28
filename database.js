@@ -38,6 +38,7 @@ const workoutSessionSchema = new mongoose.Schema({
     activeExercise: { type: String, default: null }, // Remembers what you tapped
     state: { type: String, default: 'IDLE' }, // State for flow management (e.g., 'ADDING_CUSTOM_EXERCISE')
     targetMuscleGroup: { type: String, default: null }, // Which group to add custom exercise to
+    comment: { type: String, default: null }, // User session notes
     
     // The Dynamic Checklist
     pendingExercises: [{ id: String, name: String }],

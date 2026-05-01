@@ -158,7 +158,7 @@ function getExerciseList(userPhone, muscleGroup, customExercises = []) {
     // so we cap it to the first 10, or chunk them. For simplicity, cap to 10 right now.
     // Actually, one section can have up to 10 rows.
     const allRows = exercises.map(ex => ({
-        "id": `ex|${muscleGroup}|${ex.substring(0, 15)}`, // Store muscle and name in the ID (ID length limit 200)
+        "id": `ex|${muscleGroup}|${ex.substring(0, 100)}`, // Store muscle and name in the ID (ID length limit 200)
         "title": ex.substring(0, 24)
     }));
 
